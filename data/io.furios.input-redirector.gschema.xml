@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="io.furios.input-redirector" path="/io/furios/input-redirector/">
+    <key name="input-paths" type="s">
+      <default>""</default>
+      <summary>Comma-separated list of input device paths</summary>
+      <description>
+        Comma-separated string of /dev/input/event* device paths to monitor and redirect events from.
+      </description>
+    </key>
+    <key name="display" type="s">
+      <default>""</default>
+      <summary>X11 DISPLAY value</summary>
+      <description>
+        If non-empty, this value will be set as the DISPLAY environment variable
+        before initializing libxdo. If empty, the existing DISPLAY in the environment is used.
+      </description>
+    </key>
+  </schema>
+</schemalist>
