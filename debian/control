@@ -1,0 +1,15 @@
+Source: input-redirector
+Maintainer: Bardia Moshiri <bardia@furilabs.com>
+Section: misc
+Priority: optional
+Build-Depends: debhelper-compat (= 13),
+               libgio-2.0-dev,
+               libxdo-dev,
+Standards-Version: 4.7.2
+Vcs-Browser: https://github.com/furilabs/input-redirector
+Vcs-Git: https://github.com/furilabs/input-redirector.git
+
+Package: input-redirector
+Architecture: any
+Depends: ${misc:Depends}, ${shlibs:Depends},
+Description: Input redirector for external display daemon
