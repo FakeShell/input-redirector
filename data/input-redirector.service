@@ -1,0 +1,8 @@
+[Unit]
+Description=Input redirector for external display daemon
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/input-redirector
+Restart=on-failure
+RestartSec=10
