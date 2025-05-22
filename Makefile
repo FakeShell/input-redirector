@@ -21,10 +21,13 @@ install:
 	install -m 0755 $(TARGET) $(DESTDIR)$(PREFIX)/libexec/$(TARGET)
 	install -d $(DESTDIR)$(PREFIX)/share/glib-2.0/schemas
 	install -m 0644 data/io.furios.input-redirector.gschema.xml $(DESTDIR)$(PREFIX)/share/glib-2.0/schemas/
+	install -d $(DESTDIR)$(PREFIX)/lib/systemd/user
+	install -m 0644 data/input-redirector.service $(DESTDIR)$(PREFIX)/lib/systemd/user/
 	glib-compile-schemas $(DESTDIR)$(PREFIX)/share/glib-2.0/schemas || true
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/libexec/$(TARGET)
 	rm -f $(DESTDIR)$(PREFIX)/share/glib-2.0/schemas/io.furios.input-redirector.gschema.xml
+	rm -f $(DESTDIR)$(PREFIX)/lib/systemd/user/input-redirector.service
 
 .PHONY: all clean install uninstall
