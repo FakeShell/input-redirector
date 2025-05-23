@@ -79,6 +79,7 @@ device_thread(void *data)
     int abs_x = 0, abs_y = 0;
     gboolean has_abs = FALSE;
     gboolean touch_active = FALSE;
+    gboolean moved_during_touch = FALSE;
     static gboolean first = TRUE;
 
     entry->fd = grab_device(entry->path);
@@ -104,61 +105,87 @@ device_thread(void *data)
             continue;
 
         switch (ev.type) {
-            case EV_KEY:
-                if (ev.code >= BTN_MOUSE) {
-                    xdo_simulate_mouse_button(ev.code, ev.value, entry->path);
-                } else if (ev.code == BTN_TOUCH || ev.code == BTN_TOOL_FINGER) {
-                    touch_active = (ev.value == 1);
-                    if (!touch_active)
+        case EV_KEY:
+            if (ev.code == BTN_TOUCH) {
+                /* Touch down */
+                if (ev.value == 1) {
+                    touch_active = TRUE;
+                    moved_during_touch = FALSE;
+                    first = TRUE;
+                } else { /* Touch up */
+                    touch_active = FALSE;
+                    /* no movement → treat as click */
+                    if (!moved_during_touch) {
+                        /* inject a left‐button click */
+                        xdo_simulate_mouse_button(BTN_LEFT, 1, entry->path);
+                        xdo_simulate_mouse_button(BTN_LEFT, 0, entry->path);
+                    } else {
+                        /* end of drag → lift */
                         xdo_simulate_touch_up(entry->path);
+                    }
+                }
+            } else if (ev.code == BTN_TOOL_FINGER) {
+                /* ignore tool events */
+            } else if (ev.code >= BTN_MOUSE && ev.code <= BTN_TASK) {
+                xdo_simulate_mouse_button(ev.code, ev.value, entry->path);
+            } else {
+                xdo_simulate_key_event(ev.code, ev.value, entry->path);
+            }
+            break;
+        case EV_REL:
+            if (ev.code == REL_X) {
+                rel_x += ev.value;
+                has_motion = TRUE;
+                if (touch_active)
+                    moved_during_touch = TRUE;
+            } else if (ev.code == REL_Y) {
+                rel_y += ev.value;
+                has_motion = TRUE;
+                if (touch_active)
+                    moved_during_touch = TRUE;
+            } else {
+                xdo_simulate_scroll(ev.code, ev.value, entry->path);
+            }
+            break;
+        case EV_ABS:
+            if (ev.code == ABS_X) {
+                abs_x = ev.value;
+                has_abs = TRUE;
+                if (touch_active)
+                    moved_during_touch = TRUE;
+            } else if (ev.code == ABS_Y) {
+                abs_y = ev.value;
+                has_abs = TRUE;
+                if (touch_active)
+                    moved_during_touch = TRUE;
+            }
+            break;
+        case EV_SYN:
+            if (has_motion) {
+                xdo_simulate_mouse_motion(rel_x, rel_y, entry->path);
+                rel_x = rel_y = 0;
+                has_motion = FALSE;
+            }
+
+            if (has_abs && max_x > 0 && max_y > 0 && touch_active) {
+                unsigned int w = 0, h = 0;
+                xdo_get_screen_size(&w, &h);
+                int sx = (abs_x * w) / max_x;
+                int sy = (abs_y * h) / max_y;
+
+                /* first ABS after touch down → send down at the right pos */
+                if (first) {
+                    xdo_simulate_touch_down(sx, sy, entry->path);
+                    first = FALSE;
                 } else {
-                    xdo_simulate_key_event(ev.code, ev.value, entry->path);
-                }
-                break;
-            case EV_REL:
-                if (ev.code == REL_X) {
-                    rel_x += ev.value;
-                    has_motion = TRUE;
-                } else if (ev.code == REL_Y) {
-                    rel_y += ev.value;
-                    has_motion = TRUE;
-                } else {
-                    xdo_simulate_scroll(ev.code, ev.value, entry->path);
-                }
-                break;
-            case EV_ABS:
-                if (ev.code == ABS_X) {
-                    abs_x = ev.value;
-                    has_abs = TRUE;
-                } else if (ev.code == ABS_Y) {
-                    abs_y = ev.value;
-                    has_abs = TRUE;
-                }
-                break;
-            case EV_SYN:
-                if (has_motion) {
-                    xdo_simulate_mouse_motion(rel_x, rel_y, entry->path);
-                    rel_x = rel_y = 0; has_motion = FALSE;
+                    xdo_simulate_touch_move(sx, sy, entry->path);
                 }
 
-                if (has_abs && max_x > 0 && max_y > 0) {
-                    unsigned int w = 0, h = 0;
-                    xdo_get_screen_size(&w, &h);
-                    int sx = (abs_x * w) / max_x;
-                    int sy = (abs_y * h) / max_y;
-                    if (touch_active && first) {
-                        xdo_simulate_touch_down(sx, sy, entry->path);
-                        first = FALSE;
-                    } else if (touch_active) {
-                        xdo_simulate_touch_move(sx, sy, entry->path);
-                    } else {
-                        first = TRUE;
-                    }
-                    has_abs = FALSE;
-                }
-                break;
-            default:
-                break;
+                has_abs = FALSE;
+            }
+            break;
+        default:
+            break;
         }
     }
 
