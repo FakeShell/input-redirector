@@ -27,5 +27,3 @@ uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/libexec/$(TARGET)
 	rm -f $(DESTDIR)$(PREFIX)/share/glib-2.0/schemas/io.furios.input-redirector.gschema.xml
 	rm -f $(DESTDIR)$(PREFIX)/lib/systemd/user/input-redirector.service
-
-.PHONY: all clean install uninstall
