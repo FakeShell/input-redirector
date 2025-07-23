@@ -8,15 +8,13 @@ TARGET = input-redirector
 
 PREFIX ?= /usr
 
-all: $(TARGET)
-
 $(TARGET): $(SOURCES)
 	$(CC) $(CFLAGS) $(SOURCES) -o $(TARGET) $(LDFLAGS)
 
 clean:
 	rm -f $(TARGET)
 
-install:
+install: $(TARGET)
 	install -d $(DESTDIR)$(PREFIX)/libexec
 	install -m 0755 $(TARGET) $(DESTDIR)$(PREFIX)/libexec/$(TARGET)
 	install -d $(DESTDIR)$(PREFIX)/share/glib-2.0/schemas
