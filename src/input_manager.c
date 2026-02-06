@@ -5,6 +5,7 @@
 
 #include "input_manager.h"
 #include "xdo_simulate.h"
+#include "wayland_vinput.h"
 
 #include <fcntl.h>
 
@@ -20,7 +21,169 @@ static DeviceEntry devices[MAX_DEVICES];
 static int device_count = 0;
 static volatile gboolean running = FALSE;
 static GMutex fds_mutex;
-static gboolean fds_mutex_inited = FALSE;
+static gboolean fds_mutex_initialized = FALSE;
+
+typedef enum {
+    BACKEND_X11 = 0,
+    BACKEND_WAYLAND = 1,
+} InputBackend;
+
+static GMutex backend_mutex;
+static gboolean backend_mutex_initialized = FALSE;
+
+static gboolean g_wayland_enabled = TRUE;
+static gchar *g_wayland_display = NULL;
+static InputBackend current_backend = BACKEND_X11;
+static gboolean backend_initialized = FALSE;
+
+static void
+backend_mutex_ensure_initialized(void)
+{
+    if (!backend_mutex_initialized) {
+        g_mutex_init(&backend_mutex);
+        backend_mutex_initialized = TRUE;
+    }
+}
+
+static InputBackend
+get_wanted_backend(void)
+{
+    return g_wayland_enabled ? BACKEND_WAYLAND : BACKEND_X11;
+}
+
+static void
+backend_cleanup(void)
+{
+    if (!backend_initialized)
+        return;
+
+    if (current_backend == BACKEND_WAYLAND)
+        wayland_vinput_cleanup();
+    else
+        xdo_cleanup();
+
+    backend_initialized = FALSE;
+}
+
+static void
+backend_init(InputBackend backend)
+{
+    if (backend == BACKEND_WAYLAND)
+        wayland_vinput_init(g_wayland_display);
+    else
+        xdo_init();
+
+    current_backend = backend;
+    backend_initialized = TRUE;
+}
+
+static void
+backend_ensure_ready(void)
+{
+    backend_mutex_ensure_initialized();
+
+    g_mutex_lock(&backend_mutex);
+
+    InputBackend want = get_wanted_backend();
+
+    if (!backend_initialized) {
+        backend_init(want);
+    } else if (want != current_backend) {
+        g_debug("input_manager: backend changed, reinitializing");
+        backend_cleanup();
+        backend_init(want);
+    }
+
+    g_mutex_unlock(&backend_mutex);
+}
+
+static void
+input_simulate_key_event(int code, int value, const char *thread_name)
+{
+    backend_ensure_ready();
+
+    if (current_backend == BACKEND_WAYLAND)
+        wayland_vinput_key_event(code, value, thread_name);
+    else
+        xdo_simulate_key_event(code, value, thread_name);
+}
+
+static void
+input_simulate_mouse_button(int code, int value, const char *thread_name)
+{
+    backend_ensure_ready();
+
+    if (current_backend == BACKEND_WAYLAND)
+        wayland_vinput_mouse_button(code, value, thread_name);
+    else
+        xdo_simulate_mouse_button(code, value, thread_name);
+}
+
+static void
+input_simulate_mouse_motion(int rel_x, int rel_y, const char *thread_name)
+{
+    backend_ensure_ready();
+
+    if (current_backend == BACKEND_WAYLAND)
+        wayland_vinput_mouse_motion(rel_x, rel_y, thread_name);
+    else
+        xdo_simulate_mouse_motion(rel_x, rel_y, thread_name);
+}
+
+static void
+input_simulate_scroll(int code, int value, const char *thread_name)
+{
+    backend_ensure_ready();
+
+    if (current_backend == BACKEND_WAYLAND)
+        wayland_vinput_scroll(code, value, thread_name);
+    else
+        xdo_simulate_scroll(code, value, thread_name);
+}
+
+static void
+input_simulate_touch_move(int x, int y, const char *thread_name)
+{
+    backend_ensure_ready();
+
+    if (current_backend == BACKEND_WAYLAND)
+        wayland_vinput_touch_move(x, y, thread_name);
+    else
+        xdo_simulate_touch_move(x, y, thread_name);
+}
+
+static void
+input_simulate_touch_down(int x, int y, const char *thread_name)
+{
+    backend_ensure_ready();
+
+    if (current_backend == BACKEND_WAYLAND)
+        wayland_vinput_touch_down(x, y, thread_name);
+    else
+        xdo_simulate_touch_down(x, y, thread_name);
+}
+
+static void
+input_simulate_touch_up(const char *thread_name)
+{
+    backend_ensure_ready();
+
+    if (current_backend == BACKEND_WAYLAND)
+        wayland_vinput_touch_up(thread_name);
+    else
+        xdo_simulate_touch_up(thread_name);
+}
+
+static void
+input_get_screen_size(unsigned int *w, unsigned int *h)
+{
+    backend_ensure_ready();
+
+    if (current_backend == BACKEND_WAYLAND)
+        wayland_vinput_get_screen_size(w, h);
+    else
+        xdo_get_screen_size(w, h);
+}
 
 static int
 grab_device(const gchar *dev_path)
@@ -117,19 +280,19 @@ device_thread(void *data)
                     /* no movement → treat as click */
                     if (!moved_during_touch) {
                         /* inject a left‐button click */
-                        xdo_simulate_mouse_button(BTN_LEFT, 1, entry->path);
-                        xdo_simulate_mouse_button(BTN_LEFT, 0, entry->path);
+                        input_simulate_mouse_button(BTN_LEFT, 1, entry->path);
+                        input_simulate_mouse_button(BTN_LEFT, 0, entry->path);
                     } else {
                         /* end of drag → lift */
-                        xdo_simulate_touch_up(entry->path);
+                        input_simulate_touch_up(entry->path);
                     }
                 }
             } else if (ev.code == BTN_TOOL_FINGER) {
                 /* ignore tool events */
             } else if (ev.code >= BTN_MOUSE && ev.code <= BTN_TASK) {
-                xdo_simulate_mouse_button(ev.code, ev.value, entry->path);
+                input_simulate_mouse_button(ev.code, ev.value, entry->path);
             } else {
-                xdo_simulate_key_event(ev.code, ev.value, entry->path);
+                input_simulate_key_event(ev.code, ev.value, entry->path);
             }
             break;
         case EV_REL:
@@ -144,7 +307,7 @@ device_thread(void *data)
                 if (touch_active)
                     moved_during_touch = TRUE;
             } else {
-                xdo_simulate_scroll(ev.code, ev.value, entry->path);
+                input_simulate_scroll(ev.code, ev.value, entry->path);
             }
             break;
         case EV_ABS:
@@ -162,23 +325,23 @@ device_thread(void *data)
             break;
         case EV_SYN:
             if (has_motion) {
-                xdo_simulate_mouse_motion(rel_x, rel_y, entry->path);
+                input_simulate_mouse_motion(rel_x, rel_y, entry->path);
                 rel_x = rel_y = 0;
                 has_motion = FALSE;
             }
 
             if (has_abs && max_x > 0 && max_y > 0 && touch_active) {
                 unsigned int w = 0, h = 0;
-                xdo_get_screen_size(&w, &h);
-                int sx = (abs_x * w) / max_x;
-                int sy = (abs_y * h) / max_y;
+                input_get_screen_size(&w, &h);
+                int sx = (w > 0) ? (abs_x * (int)w) / max_x : 0;
+                int sy = (h > 0) ? (abs_y * (int)h) / max_y : 0;
 
                 /* first ABS after touch down → send down at the right pos */
                 if (first) {
-                    xdo_simulate_touch_down(sx, sy, entry->path);
+                    input_simulate_touch_down(sx, sy, entry->path);
                     first = FALSE;
                 } else {
-                    xdo_simulate_touch_move(sx, sy, entry->path);
+                    input_simulate_touch_move(sx, sy, entry->path);
                 }
 
                 has_abs = FALSE;
@@ -195,14 +358,41 @@ device_thread(void *data)
 }
 
 void
+input_manager_set_wayland_enabled(gboolean enabled)
+{
+    backend_mutex_ensure_initialized();
+
+    g_mutex_lock(&backend_mutex);
+    g_wayland_enabled = enabled ? TRUE : FALSE;
+    g_mutex_unlock(&backend_mutex);
+
+    /* next simulation call or update() will reinit backend if needed */
+    g_debug("input_manager: enable-wayland set to %s", g_wayland_enabled ? "true" : "false");
+}
+
+void
+input_manager_set_wayland_display(const gchar *wayland_display)
+{
+    backend_mutex_ensure_initialized();
+
+    g_mutex_lock(&backend_mutex);
+    g_free(g_wayland_display);
+    g_wayland_display = (wayland_display && *wayland_display) ? g_strdup(wayland_display) : NULL;
+    g_mutex_unlock(&backend_mutex);
+
+    g_debug("input_manager: wayland-display set to %s", g_wayland_display ? g_wayland_display : "(unset)");
+}
+
+void
 input_manager_update(const gchar *paths)
 {
-    if (!fds_mutex_inited) {
+    if (!fds_mutex_initialized) {
         g_mutex_init(&fds_mutex);
-        fds_mutex_inited = TRUE;
+        fds_mutex_initialized = TRUE;
     }
 
     input_manager_stop();
+    backend_ensure_ready();
 
     /* reset state */
     for (int i = 0; i < MAX_DEVICES; i++) {

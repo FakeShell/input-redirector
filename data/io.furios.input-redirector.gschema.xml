@@ -8,12 +8,31 @@
         Comma-separated string of /dev/input/event* device paths to monitor and redirect events from.
       </description>
     </key>
+
     <key name="display" type="s">
       <default>""</default>
       <summary>X11 DISPLAY value</summary>
       <description>
         If non-empty, this value will be set as the DISPLAY environment variable
         before initializing libxdo. If empty, the existing DISPLAY in the environment is used.
+      </description>
+    </key>
+
+    <key name="enable-wayland" type="b">
+      <default>true</default>
+      <summary>Enable Wayland backend</summary>
+      <description>
+        If true, input-redirector will use the Wayland backend (virtual input injection).
+        If false, it will use the X11 backend (libxdo).
+      </description>
+    </key>
+
+    <key name="wayland-display" type="s">
+      <default>"wayland-1"</default>
+      <summary>WAYLAND_DISPLAY value</summary>
+      <description>
+        The Wayland display socket name to use (e.g. wayland-0, wayland-1).
+        This will be applied to the WAYLAND_DISPLAY environment variable when the Wayland backend is enabled.
       </description>
     </key>
   </schema>

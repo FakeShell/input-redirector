@@ -3,35 +3,37 @@
  * Copyright (C) 2025 Bardia Moshiri <bardia@furilabs.com>
  */
 
-#ifndef XDO_SIMULATE_H
-#define XDO_SIMULATE_H
+#ifndef WAYLAND_VINPUT_H
+#define WAYLAND_VINPUT_H
 
+#include <gio/gio.h>
 #include <linux/input.h>
-#include <xdo.h>
 
 /**
- * Initialize the libxdo instance.
+ * Initialize Wayland virtual input backend.
+ *
+ * @param wayland_display  WAYLAND_DISPLAY value (e.g. "wayland-1"). May be NULL/empty.
  */
 void
-xdo_init(void);
+wayland_vinput_init(const gchar *wayland_display);
 
 /**
- * Cleanup the libxdo instance.
+ * Cleanup Wayland virtual input backend.
  */
 void
-xdo_cleanup(void);
+wayland_vinput_cleanup(void);
 
 /**
  * Simulate a key press or release event.
  *
- * @param code         The Linux input event code (e.g., KEY_A).
+ * @param code         Linux evdev key code (e.g. KEY_A).
  * @param value        1 for press, 0 for release.
  * @param thread_name  Name of the source thread.
  */
 void
-xdo_simulate_key_event(int         code,
-                       int         value,
-                       const char *thread_name);
+wayland_vinput_key_event(int         code,
+                         int         value,
+                         const char *thread_name);
 
 /**
  * Simulate a mouse button press or release.
@@ -41,9 +43,9 @@ xdo_simulate_key_event(int         code,
  * @param thread_name  Name of the source thread.
  */
 void
-xdo_simulate_mouse_button(int         code,
-                          int         value,
-                          const char *thread_name);
+wayland_vinput_mouse_button(int         code,
+                            int         value,
+                            const char *thread_name);
 
 /**
  * Simulate relative mouse motion.
@@ -53,9 +55,9 @@ xdo_simulate_mouse_button(int         code,
  * @param thread_name  Name of the source thread.
  */
 void
-xdo_simulate_mouse_motion(int         rel_x,
-                          int         rel_y,
-                          const char *thread_name);
+wayland_vinput_mouse_motion(int         rel_x,
+                            int         rel_y,
+                            const char *thread_name);
 
 /**
  * Simulate scroll wheel events.
@@ -65,9 +67,9 @@ xdo_simulate_mouse_motion(int         rel_x,
  * @param thread_name  Name of the source thread.
  */
 void
-xdo_simulate_scroll(int         code,
-                    int         value,
-                    const char *thread_name);
+wayland_vinput_scroll(int         code,
+                      int         value,
+                      const char *thread_name);
 
 /**
  * Simulate a touch move (absolute coordinates).
@@ -77,9 +79,9 @@ xdo_simulate_scroll(int         code,
  * @param thread_name  Name of the source thread.
  */
 void
-xdo_simulate_touch_move(int         x,
-                        int         y,
-                        const char *thread_name);
+wayland_vinput_touch_move(int         x,
+                          int         y,
+                          const char *thread_name);
 
 /**
  * Simulate a touch down (press) at absolute coordinates.
@@ -89,9 +91,9 @@ xdo_simulate_touch_move(int         x,
  * @param thread_name  Name of the source thread.
  */
 void
-xdo_simulate_touch_down(int         x,
-                        int         y,
-                        const char *thread_name);
+wayland_vinput_touch_down(int         x,
+                          int         y,
+                          const char *thread_name);
 
 /**
  * Simulate a touch up (release).
@@ -99,7 +101,7 @@ xdo_simulate_touch_down(int         x,
  * @param thread_name  Name of the source thread.
  */
 void
-xdo_simulate_touch_up(const char *thread_name);
+wayland_vinput_touch_up(const char *thread_name);
 
 /**
  * Get the current screen width and height.
@@ -108,7 +110,7 @@ xdo_simulate_touch_up(const char *thread_name);
  * @param height  Output: screen height in pixels.
  */
 void
-xdo_get_screen_size(unsigned int *width,
-                    unsigned int *height);
+wayland_vinput_get_screen_size(unsigned int *width,
+                               unsigned int *height);
 
-#endif // XDO_SIMULATE_H
+#endif // WAYLAND_VINPUT_H

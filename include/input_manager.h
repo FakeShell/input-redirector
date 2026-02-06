@@ -22,4 +22,21 @@ input_manager_update(const gchar *paths);
 void
 input_manager_stop(void);
 
+/**
+ * Enable/disable Wayland backend selection.
+ *
+ * When enabled, input_manager will route input simulation calls to wayland_vinput.
+ * When disabled, it will use the X11 backend (libxdo).
+ */
+void
+input_manager_set_wayland_enabled(gboolean enabled);
+
+/**
+ * Set Wayland display name (WAYLAND_DISPLAY).
+ *
+ * Example: "wayland-0", "wayland-1".
+ */
+void
+input_manager_set_wayland_display(const gchar *wayland_display);
+
 #endif // INPUT_MANAGER_H

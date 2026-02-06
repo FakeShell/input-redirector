@@ -1,18 +1,51 @@
 CC = gcc
 
-CFLAGS = `pkg-config --cflags gio-2.0` -Iinclude
-LDFLAGS = `pkg-config --libs gio-2.0` -lxdo
+CFLAGS = `pkg-config --cflags gio-2.0 wayland-client xkbcommon` -Iinclude -Iprotocol
+LDFLAGS = `pkg-config --libs gio-2.0 wayland-client xkbcommon` -lxdo
+PROTO_DIR = protocol
 
-SOURCES = src/main.c src/xdo_simulate.c src/input_manager.c src/settings.c
-TARGET = input-redirector
+PROTO_XML = $(PROTO_DIR)/virtual-keyboard-unstable-v1.xml \
+            $(PROTO_DIR)/wlr-virtual-pointer-unstable-v1.xml
+
+PROTO_GEN = $(PROTO_DIR)/virtual-keyboard-unstable-v1-client-protocol.h \
+            $(PROTO_DIR)/virtual-keyboard-unstable-v1-protocol.c \
+            $(PROTO_DIR)/wlr-virtual-pointer-unstable-v1-client-protocol.h \
+            $(PROTO_DIR)/wlr-virtual-pointer-unstable-v1-protocol.c
+
+SOURCES = src/main.c \
+          src/xdo_simulate.c \
+          src/wayland_vinput.c \
+          src/input_manager.c \
+          src/settings.c \
+          $(PROTO_DIR)/virtual-keyboard-unstable-v1-protocol.c \
+          $(PROTO_DIR)/wlr-virtual-pointer-unstable-v1-protocol.c
+
+WAYLAND_SCANNER ?= wayland-scanner
 
 PREFIX ?= /usr
 
-$(TARGET): $(SOURCES)
+TARGET = input-redirector
+
+all: $(TARGET)
+
+$(TARGET): $(PROTO_GEN) $(SOURCES)
 	$(CC) $(CFLAGS) $(SOURCES) -o $(TARGET) $(LDFLAGS)
+
+$(PROTO_DIR)/virtual-keyboard-unstable-v1-client-protocol.h: $(PROTO_DIR)/virtual-keyboard-unstable-v1.xml
+	$(WAYLAND_SCANNER) client-header $< $@
+
+$(PROTO_DIR)/virtual-keyboard-unstable-v1-protocol.c: $(PROTO_DIR)/virtual-keyboard-unstable-v1.xml
+	$(WAYLAND_SCANNER) private-code $< $@
+
+$(PROTO_DIR)/wlr-virtual-pointer-unstable-v1-client-protocol.h: $(PROTO_DIR)/wlr-virtual-pointer-unstable-v1.xml
+	$(WAYLAND_SCANNER) client-header $< $@
+
+$(PROTO_DIR)/wlr-virtual-pointer-unstable-v1-protocol.c: $(PROTO_DIR)/wlr-virtual-pointer-unstable-v1.xml
+	$(WAYLAND_SCANNER) private-code $< $@
 
 clean:
 	rm -f $(TARGET)
+	rm -f $(PROTO_GEN)
 
 install: $(TARGET)
 	install -d $(DESTDIR)$(PREFIX)/libexec
