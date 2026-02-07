@@ -59,15 +59,102 @@ now_ms(void)
 }
 
 static void
+wayland_cleanup(void)
+{
+    if (g_wl.vptr) {
+        zwlr_virtual_pointer_v1_destroy(g_wl.vptr);
+        g_wl.vptr = NULL;
+    }
+
+    if (g_wl.vkbd) {
+        zwp_virtual_keyboard_v1_destroy(g_wl.vkbd);
+        g_wl.vkbd = NULL;
+    }
+
+    if (g_wl.vptr_mgr) {
+        zwlr_virtual_pointer_manager_v1_destroy(g_wl.vptr_mgr);
+        g_wl.vptr_mgr = NULL;
+    }
+
+    if (g_wl.vkbd_mgr) {
+        zwp_virtual_keyboard_manager_v1_destroy(g_wl.vkbd_mgr);
+        g_wl.vkbd_mgr = NULL;
+    }
+
+    if (g_wl.output) {
+        wl_output_destroy(g_wl.output);
+        g_wl.output = NULL;
+    }
+
+    if (g_wl.seat) {
+        wl_seat_destroy(g_wl.seat);
+        g_wl.seat = NULL;
+    }
+
+    if (g_wl.registry) {
+        wl_registry_destroy(g_wl.registry);
+        g_wl.registry = NULL;
+    }
+
+    if (g_wl.display) {
+        wl_display_disconnect(g_wl.display);
+        g_wl.display = NULL;
+    }
+
+    if (g_wl.xkb_keymap) {
+        xkb_keymap_unref(g_wl.xkb_keymap);
+        g_wl.xkb_keymap = NULL;
+    }
+
+    if (g_wl.xkb_ctx) {
+        xkb_context_unref(g_wl.xkb_ctx);
+        g_wl.xkb_ctx = NULL;
+    }
+
+    g_wl.initialized = FALSE;
+    g_wl.out_width = 0;
+    g_wl.out_height = 0;
+    g_wl.seat_caps = 0;
+    g_wl.seat_name[0] = '\0';
+}
+
+static void
+wayland_handle_disconnect(const char *where)
+{
+    int werr = 0;
+
+    if (g_wl.display)
+        werr = wl_display_get_error(g_wl.display);
+
+    g_debug("wayland_vinput: Wayland connection error at %s (wl_error=%d, errno=%d: %s). reconnecting",
+            where ? where : "unknown",
+            werr,
+            errno,
+            g_strerror(errno));
+
+    wayland_cleanup();
+}
+
+static void
 pump(void)
 {
     if (!g_wl.display)
         return;
 
-    if (wl_display_flush(g_wl.display) < 0)
-        g_debug("wayland_vinput: wl_display_flush failed");
+    if (wl_display_flush(g_wl.display) < 0) {
+        wayland_handle_disconnect("wl_display_flush");
+        return;
+    }
 
-    wl_display_dispatch_pending(g_wl.display);
+    if (wl_display_dispatch_pending(g_wl.display) < 0) {
+        wayland_handle_disconnect("wl_display_dispatch_pending");
+        return;
+    }
+
+    if (g_wl.display && wl_display_get_error(g_wl.display) != 0) {
+        wayland_handle_disconnect("wl_display_get_error");
+        return;
+    }
 }
 
 static int
@@ -336,6 +423,9 @@ static const struct wl_registry_listener registry_listener = {
 static void
 ensure_initialized(void)
 {
+    if (g_wl.display && wl_display_get_error(g_wl.display) != 0)
+        wayland_handle_disconnect("ensure_initialized(precheck)");
+
     if (g_wl.initialized)
         return;
 
@@ -353,29 +443,39 @@ ensure_initialized(void)
     g_wl.registry = wl_display_get_registry(g_wl.display);
     if (!g_wl.registry) {
         g_debug("wayland_vinput: wl_display_get_registry failed");
+        wayland_handle_disconnect("wl_display_get_registry");
         return;
     }
 
     wl_registry_add_listener(g_wl.registry, &registry_listener, NULL);
 
-    if (wl_display_roundtrip(g_wl.display) < 0)
+    if (wl_display_roundtrip(g_wl.display) < 0) {
         g_debug("wayland_vinput: wl_display_roundtrip(globals) failed");
+        wayland_handle_disconnect("wl_display_roundtrip(globals)");
+        return;
+    }
 
-    if (wl_display_roundtrip(g_wl.display) < 0)
+    if (wl_display_roundtrip(g_wl.display) < 0) {
         g_debug("wayland_vinput: wl_display_roundtrip(seat/output) failed");
+        wayland_handle_disconnect("wl_display_roundtrip(seat/output)");
+        return;
+    }
 
     if (!g_wl.seat) {
         g_debug("wayland_vinput: no wl_seat advertised");
+        wayland_handle_disconnect("no wl_seat");
         return;
     }
 
     if (!g_wl.vkbd_mgr) {
         g_debug("wayland_vinput: zwp_virtual_keyboard_manager_v1 not advertised");
+        wayland_handle_disconnect("no vkbd_mgr");
         return;
     }
 
     if (!g_wl.vptr_mgr) {
         g_debug("wayland_vinput: zwlr_virtual_pointer_manager_v1 not advertised");
+        wayland_handle_disconnect("no vptr_mgr");
         return;
     }
 
@@ -384,6 +484,7 @@ ensure_initialized(void)
                                                                g_wl.seat);
     if (!g_wl.vkbd) {
         g_debug("wayland_vinput: failed to create zwp_virtual_keyboard_v1");
+        wayland_handle_disconnect("create_virtual_keyboard");
         return;
     }
 
@@ -392,14 +493,18 @@ ensure_initialized(void)
                                                               g_wl.seat);
     if (!g_wl.vptr) {
         g_debug("wayland_vinput: failed to create zwlr_virtual_pointer_v1");
+        wayland_handle_disconnect("create_virtual_pointer");
         return;
     }
 
     if (!send_default_keymap())
         g_debug("wayland_vinput: failed to send default keymap");
 
-    if (wl_display_roundtrip(g_wl.display) < 0)
+    if (g_wl.display && wl_display_roundtrip(g_wl.display) < 0) {
         g_debug("wayland_vinput: wl_display_roundtrip(after keymap) failed");
+        wayland_handle_disconnect("wl_display_roundtrip(after keymap)");
+        return;
+    }
 
     g_wl.initialized = TRUE;
 
@@ -435,64 +540,10 @@ wayland_vinput_cleanup(void)
 
     g_mutex_lock(&g_wl.mutex);
 
-    if (g_wl.vptr) {
-        zwlr_virtual_pointer_v1_destroy(g_wl.vptr);
-        g_wl.vptr = NULL;
-    }
-
-    if (g_wl.vkbd) {
-        zwp_virtual_keyboard_v1_destroy(g_wl.vkbd);
-        g_wl.vkbd = NULL;
-    }
-
-    if (g_wl.vptr_mgr) {
-        zwlr_virtual_pointer_manager_v1_destroy(g_wl.vptr_mgr);
-        g_wl.vptr_mgr = NULL;
-    }
-
-    if (g_wl.vkbd_mgr) {
-        zwp_virtual_keyboard_manager_v1_destroy(g_wl.vkbd_mgr);
-        g_wl.vkbd_mgr = NULL;
-    }
-
-    if (g_wl.output) {
-        wl_output_destroy(g_wl.output);
-        g_wl.output = NULL;
-    }
-
-    if (g_wl.seat) {
-        wl_seat_destroy(g_wl.seat);
-        g_wl.seat = NULL;
-    }
-
-    if (g_wl.registry) {
-        wl_registry_destroy(g_wl.registry);
-        g_wl.registry = NULL;
-    }
-
-    if (g_wl.display) {
-        wl_display_disconnect(g_wl.display);
-        g_wl.display = NULL;
-    }
-
-    if (g_wl.xkb_keymap) {
-        xkb_keymap_unref(g_wl.xkb_keymap);
-        g_wl.xkb_keymap = NULL;
-    }
-
-    if (g_wl.xkb_ctx) {
-        xkb_context_unref(g_wl.xkb_ctx);
-        g_wl.xkb_ctx = NULL;
-    }
+    wayland_cleanup();
 
     g_free(g_wl.wayland_display);
     g_wl.wayland_display = NULL;
-
-    g_wl.initialized = FALSE;
-    g_wl.out_width = 0;
-    g_wl.out_height = 0;
-    g_wl.seat_caps = 0;
-    g_wl.seat_name[0] = '\0';
 
     g_mutex_unlock(&g_wl.mutex);
 }
