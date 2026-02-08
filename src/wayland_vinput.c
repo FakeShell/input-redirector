@@ -673,7 +673,7 @@ wayland_vinput_scroll(int code,
         g_wl.vptr,
         now_ms(),
         axis,
-        wl_fixed_from_double((double) value * 10.0)
+        wl_fixed_from_double((double) - value * 10.0)
     );
 
     zwlr_virtual_pointer_v1_frame(g_wl.vptr);
