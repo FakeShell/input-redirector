@@ -430,3 +430,70 @@ input_manager_stop(void)
     device_count = 0;
     g_debug("All threads joined and devices released");
 }
+
+void
+input_manager_inject_key_event(guint32      code,
+                               gint32       value,
+                               const gchar *source)
+{
+    input_simulate_key_event((int) code, (int) value, source ? source : "dbus");
+}
+
+void
+input_manager_inject_mouse_button(guint32      code,
+                                  gint32       value,
+                                  const gchar *source)
+{
+    input_simulate_mouse_button((int) code, (int) value, source ? source : "dbus");
+}
+
+void
+input_manager_inject_mouse_motion(gint32       dx,
+                                  gint32       dy,
+                                  const gchar *source)
+{
+    input_simulate_mouse_motion((int) dx, (int) dy, source ? source : "dbus");
+}
+
+void
+input_manager_inject_scroll(guint32      code,
+                            gint32       value,
+                            const gchar *source)
+{
+    input_simulate_scroll((int) code, (int) value, source ? source : "dbus");
+}
+
+void
+input_manager_inject_touch_down(gint32       x,
+                                gint32       y,
+                                const gchar *source)
+{
+    input_simulate_touch_down((int) x, (int) y, source ? source : "dbus");
+}
+
+void
+input_manager_inject_touch_move(gint32       x,
+                                gint32       y,
+                                const gchar *source)
+{
+    input_simulate_touch_move((int) x, (int) y, source ? source : "dbus");
+}
+
+void
+input_manager_inject_touch_up(const gchar *source)
+{
+    input_simulate_touch_up(source ? source : "dbus");
+}
+
+void
+input_manager_get_screen_size(guint *width,
+                              guint *height)
+{
+    unsigned int w = 0, h = 0;
+    input_get_screen_size(&w, &h);
+
+    if (width)
+        *width = (guint) w;
+    if (height)
+        *height = (guint) h;
+}

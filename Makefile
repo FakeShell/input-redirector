@@ -17,6 +17,7 @@ SOURCES = src/main.c \
           src/wayland_vinput.c \
           src/input_manager.c \
           src/settings.c \
+          src/dbus.c \
           $(PROTO_DIR)/virtual-keyboard-unstable-v1-protocol.c \
           $(PROTO_DIR)/wlr-virtual-pointer-unstable-v1-protocol.c
 
