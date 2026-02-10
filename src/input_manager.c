@@ -17,6 +17,20 @@ typedef struct {
     int         fd;
 } DeviceEntry;
 
+typedef struct {
+    int max_x, max_y;
+
+    int rel_x, rel_y;
+    gboolean has_motion;
+
+    int abs_x, abs_y;
+    gboolean has_abs;
+
+    gboolean touch_active;
+    gboolean moved_during_touch;
+    gboolean first;
+} DeviceThreadState;
+
 static DeviceEntry devices[MAX_DEVICES];
 static int device_count = 0;
 static volatile gboolean running = FALSE;
@@ -230,20 +244,152 @@ cleanup_handler(void *arg)
     ungrab_device(entry);
 }
 
+static void
+device_state_init(DeviceThreadState *st)
+{
+    st->max_x = 0;
+    st->max_y = 0;
+
+    st->rel_x = 0;
+    st->rel_y = 0;
+    st->has_motion = FALSE;
+
+    st->abs_x = 0;
+    st->abs_y = 0;
+    st->has_abs = FALSE;
+
+    st->touch_active = FALSE;
+    st->moved_during_touch = FALSE;
+    st->first = TRUE;
+}
+
+static void
+device_read_abs_ranges(DeviceEntry *entry, DeviceThreadState *st)
+{
+    struct input_absinfo info;
+
+    if (ioctl(entry->fd, EVIOCGABS(ABS_X), &info) == 0)
+        st->max_x = info.maximum;
+    if (ioctl(entry->fd, EVIOCGABS(ABS_Y), &info) == 0)
+        st->max_y = info.maximum;
+}
+
+static void
+device_ev_key(DeviceEntry *entry, DeviceThreadState *st, const struct input_event *ev)
+{
+    if (ev->code == BTN_TOUCH) {
+        /* Touch down */
+        if (ev->value == 1) {
+            st->touch_active = TRUE;
+            st->moved_during_touch = FALSE;
+            st->first = TRUE;
+        } else { /* Touch up */
+            st->touch_active = FALSE;
+            /* no movement: treat as click */
+            if (!st->moved_during_touch) {
+                /* inject a left-button click */
+                input_simulate_mouse_button(BTN_LEFT, 1, entry->path);
+                input_simulate_mouse_button(BTN_LEFT, 0, entry->path);
+            } else {
+                /* end of drag: lift */
+                input_simulate_touch_up(entry->path);
+            }
+        }
+        return;
+    }
+
+    /* ignore tool events */
+    if (ev->code == BTN_TOOL_FINGER)
+        return;
+
+    if (ev->code >= BTN_MOUSE && ev->code <= BTN_TASK) {
+        input_simulate_mouse_button(ev->code, ev->value, entry->path);
+        return;
+    }
+
+    input_simulate_key_event(ev->code, ev->value, entry->path);
+}
+
+static void
+device_ev_rel(DeviceEntry *entry, DeviceThreadState *st, const struct input_event *ev)
+{
+    if (ev->code == REL_X) {
+        st->rel_x += ev->value;
+        st->has_motion = TRUE;
+        if (st->touch_active)
+            st->moved_during_touch = TRUE;
+        return;
+    }
+
+    if (ev->code == REL_Y) {
+        st->rel_y += ev->value;
+        st->has_motion = TRUE;
+        if (st->touch_active)
+            st->moved_during_touch = TRUE;
+        return;
+    }
+
+    input_simulate_scroll(ev->code, ev->value, entry->path);
+}
+
+static void
+device_ev_abs(DeviceEntry *entry, DeviceThreadState *st, const struct input_event *ev)
+{
+    (void) entry;
+
+    if (ev->code == ABS_X) {
+        st->abs_x = ev->value;
+        st->has_abs = TRUE;
+        if (st->touch_active)
+            st->moved_during_touch = TRUE;
+        return;
+    }
+
+    if (ev->code == ABS_Y) {
+        st->abs_y = ev->value;
+        st->has_abs = TRUE;
+        if (st->touch_active)
+            st->moved_during_touch = TRUE;
+        return;
+    }
+}
+
+static void
+device_ev_syn(DeviceEntry *entry, DeviceThreadState *st)
+{
+    if (st->has_motion) {
+        input_simulate_mouse_motion(st->rel_x, st->rel_y, entry->path);
+        st->rel_x = 0;
+        st->rel_y = 0;
+        st->has_motion = FALSE;
+    }
+
+    if (st->has_abs && st->max_x > 0 && st->max_y > 0 && st->touch_active) {
+        unsigned int w = 0, h = 0;
+        input_get_screen_size(&w, &h);
+        int sx = (w > 0) ? (st->abs_x * (int) w) / st->max_x : 0;
+        int sy = (h > 0) ? (st->abs_y * (int) h) / st->max_y : 0;
+
+        /* first ABS after touch down: send down at the right pos */
+        if (st->first) {
+            input_simulate_touch_down(sx, sy, entry->path);
+            st->first = FALSE;
+        } else {
+            input_simulate_touch_move(sx, sy, entry->path);
+        }
+
+        st->has_abs = FALSE;
+    }
+}
+
 static void *
 device_thread(void *data)
 {
     DeviceEntry *entry = data;
     struct input_event ev;
-    struct input_absinfo info;
-    int max_x = 0, max_y = 0;
-    int rel_x = 0, rel_y = 0;
-    gboolean has_motion = FALSE;
-    int abs_x = 0, abs_y = 0;
-    gboolean has_abs = FALSE;
-    gboolean touch_active = FALSE;
-    gboolean moved_during_touch = FALSE;
-    static gboolean first = TRUE;
+    DeviceThreadState st;
+
+    device_state_init(&st);
 
     entry->fd = grab_device(entry->path);
     if (entry->fd < 0)
@@ -257,10 +403,7 @@ device_thread(void *data)
     pthread_cleanup_push(cleanup_handler, entry);
 
     /* get ABS ranges */
-    if (ioctl(entry->fd, EVIOCGABS(ABS_X), &info) == 0)
-        max_x = info.maximum;
-    if (ioctl(entry->fd, EVIOCGABS(ABS_Y), &info) == 0)
-        max_y = info.maximum;
+    device_read_abs_ranges(entry, &st);
 
     while (running) {
         /* block here until event or pthread_cancel() */
@@ -269,83 +412,16 @@ device_thread(void *data)
 
         switch (ev.type) {
         case EV_KEY:
-            if (ev.code == BTN_TOUCH) {
-                /* Touch down */
-                if (ev.value == 1) {
-                    touch_active = TRUE;
-                    moved_during_touch = FALSE;
-                    first = TRUE;
-                } else { /* Touch up */
-                    touch_active = FALSE;
-                    /* no movement → treat as click */
-                    if (!moved_during_touch) {
-                        /* inject a left‐button click */
-                        input_simulate_mouse_button(BTN_LEFT, 1, entry->path);
-                        input_simulate_mouse_button(BTN_LEFT, 0, entry->path);
-                    } else {
-                        /* end of drag → lift */
-                        input_simulate_touch_up(entry->path);
-                    }
-                }
-            } else if (ev.code == BTN_TOOL_FINGER) {
-                /* ignore tool events */
-            } else if (ev.code >= BTN_MOUSE && ev.code <= BTN_TASK) {
-                input_simulate_mouse_button(ev.code, ev.value, entry->path);
-            } else {
-                input_simulate_key_event(ev.code, ev.value, entry->path);
-            }
+            device_ev_key(entry, &st, &ev);
             break;
         case EV_REL:
-            if (ev.code == REL_X) {
-                rel_x += ev.value;
-                has_motion = TRUE;
-                if (touch_active)
-                    moved_during_touch = TRUE;
-            } else if (ev.code == REL_Y) {
-                rel_y += ev.value;
-                has_motion = TRUE;
-                if (touch_active)
-                    moved_during_touch = TRUE;
-            } else {
-                input_simulate_scroll(ev.code, ev.value, entry->path);
-            }
+            device_ev_rel(entry, &st, &ev);
             break;
         case EV_ABS:
-            if (ev.code == ABS_X) {
-                abs_x = ev.value;
-                has_abs = TRUE;
-                if (touch_active)
-                    moved_during_touch = TRUE;
-            } else if (ev.code == ABS_Y) {
-                abs_y = ev.value;
-                has_abs = TRUE;
-                if (touch_active)
-                    moved_during_touch = TRUE;
-            }
+            device_ev_abs(entry, &st, &ev);
             break;
         case EV_SYN:
-            if (has_motion) {
-                input_simulate_mouse_motion(rel_x, rel_y, entry->path);
-                rel_x = rel_y = 0;
-                has_motion = FALSE;
-            }
-
-            if (has_abs && max_x > 0 && max_y > 0 && touch_active) {
-                unsigned int w = 0, h = 0;
-                input_get_screen_size(&w, &h);
-                int sx = (w > 0) ? (abs_x * (int)w) / max_x : 0;
-                int sy = (h > 0) ? (abs_y * (int)h) / max_y : 0;
-
-                /* first ABS after touch down → send down at the right pos */
-                if (first) {
-                    input_simulate_touch_down(sx, sy, entry->path);
-                    first = FALSE;
-                } else {
-                    input_simulate_touch_move(sx, sy, entry->path);
-                }
-
-                has_abs = FALSE;
-            }
+            device_ev_syn(entry, &st);
             break;
         default:
             break;
