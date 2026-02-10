@@ -61,52 +61,64 @@ now_ms(void)
 static void
 wayland_cleanup(void)
 {
+    g_debug("wayland_vinput: cleanup");
+
     if (g_wl.vptr) {
+        g_debug("wayland_vinput: destroy vptr");
         zwlr_virtual_pointer_v1_destroy(g_wl.vptr);
         g_wl.vptr = NULL;
     }
 
     if (g_wl.vkbd) {
+        g_debug("wayland_vinput: destroy vkbd");
         zwp_virtual_keyboard_v1_destroy(g_wl.vkbd);
         g_wl.vkbd = NULL;
     }
 
     if (g_wl.vptr_mgr) {
+        g_debug("wayland_vinput: destroy vptr_mgr");
         zwlr_virtual_pointer_manager_v1_destroy(g_wl.vptr_mgr);
         g_wl.vptr_mgr = NULL;
     }
 
     if (g_wl.vkbd_mgr) {
+        g_debug("wayland_vinput: destroy vkbd_mgr");
         zwp_virtual_keyboard_manager_v1_destroy(g_wl.vkbd_mgr);
         g_wl.vkbd_mgr = NULL;
     }
 
     if (g_wl.output) {
+        g_debug("wayland_vinput: destroy output");
         wl_output_destroy(g_wl.output);
         g_wl.output = NULL;
     }
 
     if (g_wl.seat) {
+        g_debug("wayland_vinput: destroy seat");
         wl_seat_destroy(g_wl.seat);
         g_wl.seat = NULL;
     }
 
     if (g_wl.registry) {
+        g_debug("wayland_vinput: destroy registry");
         wl_registry_destroy(g_wl.registry);
         g_wl.registry = NULL;
     }
 
     if (g_wl.display) {
+        g_debug("wayland_vinput: disconnect display");
         wl_display_disconnect(g_wl.display);
         g_wl.display = NULL;
     }
 
     if (g_wl.xkb_keymap) {
+        g_debug("wayland_vinput: unref xkb_keymap");
         xkb_keymap_unref(g_wl.xkb_keymap);
         g_wl.xkb_keymap = NULL;
     }
 
     if (g_wl.xkb_ctx) {
+        g_debug("wayland_vinput: unref xkb_ctx");
         xkb_context_unref(g_wl.xkb_ctx);
         g_wl.xkb_ctx = NULL;
     }
@@ -142,16 +154,19 @@ pump(void)
         return;
 
     if (wl_display_flush(g_wl.display) < 0) {
+        g_debug("wayland_vinput: wl_display_flush failed");
         wayland_handle_disconnect("wl_display_flush");
         return;
     }
 
     if (wl_display_dispatch_pending(g_wl.display) < 0) {
+        g_debug("wayland_vinput: wl_display_dispatch_pending failed");
         wayland_handle_disconnect("wl_display_dispatch_pending");
         return;
     }
 
     if (g_wl.display && wl_display_get_error(g_wl.display) != 0) {
+        g_debug("wayland_vinput: wl_display_get_error indicates failure");
         wayland_handle_disconnect("wl_display_get_error");
         return;
     }
@@ -179,8 +194,10 @@ create_memfd(size_t size)
 static gboolean
 send_default_keymap(void)
 {
-    if (!g_wl.vkbd)
+    if (!g_wl.vkbd) {
+        g_debug("wayland_vinput: send_default_keymap called without vkbd");
         return FALSE;
+    }
 
     if (!g_wl.xkb_ctx) {
         g_wl.xkb_ctx = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
@@ -188,6 +205,7 @@ send_default_keymap(void)
             g_debug("wayland_vinput: xkb_context_new failed");
             return FALSE;
         }
+        g_debug("wayland_vinput: created xkb_context");
     }
 
     if (!g_wl.xkb_keymap) {
@@ -201,6 +219,7 @@ send_default_keymap(void)
             g_debug("wayland_vinput: xkb_keymap_new_from_names failed");
             return FALSE;
         }
+        g_debug("wayland_vinput: created xkb_keymap");
     }
 
     char *keymap_str = xkb_keymap_get_as_string(g_wl.xkb_keymap, XKB_KEYMAP_FORMAT_TEXT_V1);
@@ -227,6 +246,8 @@ send_default_keymap(void)
     }
 
     lseek(fd, 0, SEEK_SET);
+
+    g_debug("wayland_vinput: sending keymap (size=%zu)", size);
 
     zwp_virtual_keyboard_v1_keymap(
         g_wl.vkbd,
@@ -488,9 +509,8 @@ ensure_initialized(void)
         return;
     }
 
-    g_wl.vptr =
-        zwlr_virtual_pointer_manager_v1_create_virtual_pointer(g_wl.vptr_mgr,
-                                                              g_wl.seat);
+    g_wl.vptr = zwlr_virtual_pointer_manager_v1_create_virtual_pointer(g_wl.vptr_mgr,
+                                                                       g_wl.seat);
     if (!g_wl.vptr) {
         g_debug("wayland_vinput: failed to create zwlr_virtual_pointer_v1");
         wayland_handle_disconnect("create_virtual_pointer");
@@ -553,14 +573,16 @@ wayland_vinput_key_event(int code,
                          int value,
                          const char *thread_name)
 {
-    (void) thread_name;
-
     g_mutex_lock(&g_wl.mutex);
+
+    g_debug("[%s] wayland_vinput: key_event code=%d value=%d",
+            thread_name, code, value);
 
     ensure_initialized();
 
     if (!g_wl.initialized || !g_wl.vkbd) {
-        g_debug("wayland_vinput: key_event called but backend not ready");
+        g_debug("[%s] wayland_vinput: key_event called but backend not ready",
+                thread_name);
         g_mutex_unlock(&g_wl.mutex);
         return;
     }
@@ -583,14 +605,16 @@ wayland_vinput_mouse_button(int code,
                             int value,
                             const char *thread_name)
 {
-    (void) thread_name;
-
     g_mutex_lock(&g_wl.mutex);
+
+    g_debug("[%s] wayland_vinput: mouse_button code=%d value=%d",
+            thread_name, code, value);
 
     ensure_initialized();
 
     if (!g_wl.initialized || !g_wl.vptr) {
-        g_debug("wayland_vinput: mouse_button called but backend not ready");
+        g_debug("[%s] wayland_vinput: mouse_button called but backend not ready",
+                thread_name);
         g_mutex_unlock(&g_wl.mutex);
         return;
     }
@@ -615,14 +639,16 @@ wayland_vinput_mouse_motion(int rel_x,
                             int rel_y,
                             const char *thread_name)
 {
-    (void) thread_name;
-
     g_mutex_lock(&g_wl.mutex);
+
+    g_debug("[%s] wayland_vinput: mouse_motion dx=%d dy=%d",
+            thread_name, rel_x, rel_y);
 
     ensure_initialized();
 
     if (!g_wl.initialized || !g_wl.vptr) {
-        g_debug("wayland_vinput: mouse_motion called but backend not ready");
+        g_debug("[%s] wayland_vinput: mouse_motion called but backend not ready",
+                thread_name);
         g_mutex_unlock(&g_wl.mutex);
         return;
     }
@@ -646,14 +672,16 @@ wayland_vinput_scroll(int code,
                       int value,
                       const char *thread_name)
 {
-    (void) thread_name;
-
     g_mutex_lock(&g_wl.mutex);
+
+    g_debug("[%s] wayland_vinput: scroll code=%d value=%d",
+            thread_name, code, value);
 
     ensure_initialized();
 
     if (!g_wl.initialized || !g_wl.vptr) {
-        g_debug("wayland_vinput: scroll called but backend not ready");
+        g_debug("[%s] wayland_vinput: scroll called but backend not ready",
+                thread_name);
         g_mutex_unlock(&g_wl.mutex);
         return;
     }
@@ -727,14 +755,16 @@ wayland_vinput_touch_down(int x,
                           int y,
                           const char *thread_name)
 {
-    (void) thread_name;
-
     g_mutex_lock(&g_wl.mutex);
+
+    g_debug("[%s] wayland_vinput: touch_down x=%d y=%d",
+            thread_name, x, y);
 
     ensure_initialized();
 
     if (!g_wl.initialized || !g_wl.vptr) {
-        g_debug("wayland_vinput: touch_down called but backend not ready");
+        g_debug("[%s] wayland_vinput: touch_down called but backend not ready",
+                thread_name);
         g_mutex_unlock(&g_wl.mutex);
         return;
     }
@@ -760,14 +790,16 @@ wayland_vinput_touch_move(int x,
                           int y,
                           const char *thread_name)
 {
-    (void) thread_name;
-
     g_mutex_lock(&g_wl.mutex);
+
+    g_debug("[%s] wayland_vinput: touch_move x=%d y=%d",
+            thread_name, x, y);
 
     ensure_initialized();
 
     if (!g_wl.initialized || !g_wl.vptr) {
-        g_debug("wayland_vinput: touch_move called but backend not ready");
+        g_debug("[%s] wayland_vinput: touch_move called but backend not ready",
+                thread_name);
         g_mutex_unlock(&g_wl.mutex);
         return;
     }
@@ -782,14 +814,16 @@ wayland_vinput_touch_move(int x,
 void
 wayland_vinput_touch_up(const char *thread_name)
 {
-    (void) thread_name;
-
     g_mutex_lock(&g_wl.mutex);
+
+    g_debug("[%s] wayland_vinput: touch_up",
+            thread_name);
 
     ensure_initialized();
 
     if (!g_wl.initialized || !g_wl.vptr) {
-        g_debug("wayland_vinput: touch_up called but backend not ready");
+        g_debug("[%s] wayland_vinput: touch_up called but backend not ready",
+                thread_name);
         g_mutex_unlock(&g_wl.mutex);
         return;
     }
