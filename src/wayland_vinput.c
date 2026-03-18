@@ -26,6 +26,7 @@ typedef struct {
     struct wl_output *output;
     int out_width;
     int out_height;
+    int32_t out_transform;
 
     struct zwp_virtual_keyboard_manager_v1 *vkbd_mgr;
     struct zwlr_virtual_pointer_manager_v1 *vptr_mgr;
@@ -126,6 +127,7 @@ wayland_cleanup(void)
     g_wl.initialized = FALSE;
     g_wl.out_width = 0;
     g_wl.out_height = 0;
+    g_wl.out_transform = WL_OUTPUT_TRANSFORM_NORMAL;
     g_wl.seat_caps = 0;
     g_wl.seat_name[0] = '\0';
 }
@@ -313,7 +315,10 @@ wl_output_geometry(void *data,
     (void) subpixel;
     (void) make;
     (void) model;
-    (void) transform;
+
+    g_wl.out_transform = transform;
+
+    g_debug("wayland_vinput: wl_output transform = %d", transform);
 }
 
 static void
@@ -528,7 +533,8 @@ ensure_initialized(void)
 
     g_wl.initialized = TRUE;
 
-    g_debug("wayland_vinput: ready (screen=%dx%d)", g_wl.out_width, g_wl.out_height);
+    g_debug("wayland_vinput: ready (screen=%dx%d transform=%d)",
+            g_wl.out_width, g_wl.out_height, g_wl.out_transform);
 }
 
 void
@@ -714,37 +720,96 @@ wayland_vinput_scroll(int code,
 static void
 pointer_abs(int x, int y)
 {
-    uint32_t w = 1000;
-    uint32_t h = 1000;
+    uint32_t raw_w = 1000;
+    uint32_t raw_h = 1000;
+    uint32_t extent_w;
+    uint32_t extent_h;
+    int tx = x;
+    int ty = y;
 
     if (g_wl.out_width > 0)
-        w = (uint32_t) g_wl.out_width;
+        raw_w = (uint32_t) g_wl.out_width;
 
     if (g_wl.out_height > 0)
-        h = (uint32_t) g_wl.out_height;
+        raw_h = (uint32_t) g_wl.out_height;
 
-    uint32_t ux = 0;
-    uint32_t uy = 0;
+    switch (g_wl.out_transform) {
+    case WL_OUTPUT_TRANSFORM_90:
+        extent_w = raw_h;
+        extent_h = raw_w;
+        tx = y;
+        ty = (int) raw_w - x;
+        break;
 
-    if (x > 0)
-        ux = (uint32_t) x;
+    case WL_OUTPUT_TRANSFORM_180:
+        extent_w = raw_w;
+        extent_h = raw_h;
+        tx = (int) raw_w - x;
+        ty = (int) raw_h - y;
+        break;
 
-    if (y > 0)
-        uy = (uint32_t) y;
+    case WL_OUTPUT_TRANSFORM_270:
+        extent_w = raw_h;
+        extent_h = raw_w;
+        tx = (int) raw_h - y;
+        ty = x;
+        break;
 
-    if (ux > w)
-        ux = w;
+    case WL_OUTPUT_TRANSFORM_FLIPPED:
+        extent_w = raw_w;
+        extent_h = raw_h;
+        tx = (int) raw_w - x;
+        ty = y;
+        break;
 
-    if (uy > h)
-        uy = h;
+    case WL_OUTPUT_TRANSFORM_FLIPPED_90:
+        extent_w = raw_h;
+        extent_h = raw_w;
+        tx = y;
+        ty = x;
+        break;
+
+    case WL_OUTPUT_TRANSFORM_FLIPPED_180:
+        extent_w = raw_w;
+        extent_h = raw_h;
+        tx = x;
+        ty = (int) raw_h - y;
+        break;
+
+    case WL_OUTPUT_TRANSFORM_FLIPPED_270:
+        extent_w = raw_h;
+        extent_h = raw_w;
+        tx = (int) raw_h - y;
+        ty = (int) raw_w - x;
+        break;
+
+    case WL_OUTPUT_TRANSFORM_NORMAL:
+    default:
+        extent_w = raw_w;
+        extent_h = raw_h;
+        break;
+    }
+
+    if (tx < 0)
+        tx = 0;
+    if (ty < 0)
+        ty = 0;
+
+    if ((uint32_t) tx > extent_w)
+        tx = (int) extent_w;
+    if ((uint32_t) ty > extent_h)
+        ty = (int) extent_h;
+
+    g_debug("wayland_vinput: pointer_abs raw=(%d,%d) transformed=(%d,%d) extent=%ux%u transform=%d",
+            x, y, tx, ty, extent_w, extent_h, g_wl.out_transform);
 
     zwlr_virtual_pointer_v1_motion_absolute(
         g_wl.vptr,
         now_ms(),
-        ux,
-        uy,
-        w,
-        h
+        (uint32_t) tx,
+        (uint32_t) ty,
+        extent_w,
+        extent_h
     );
 
     zwlr_virtual_pointer_v1_frame(g_wl.vptr);
