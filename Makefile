@@ -1,7 +1,7 @@
 CC = gcc
 
-CFLAGS = `pkg-config --cflags gio-2.0 wayland-client xkbcommon` -Iinclude -Iprotocol
-LDFLAGS = `pkg-config --libs gio-2.0 wayland-client xkbcommon` -lxdo
+CFLAGS = `pkg-config --cflags gio-2.0 wayland-client xkbcommon libudev` -Iinclude -Iprotocol
+LDFLAGS = `pkg-config --libs gio-2.0 wayland-client xkbcommon libudev` -lxdo
 PROTO_DIR = protocol
 
 PROTO_XML = $(PROTO_DIR)/virtual-keyboard-unstable-v1.xml \
@@ -18,6 +18,7 @@ SOURCES = src/main.c \
           src/input_manager.c \
           src/settings.c \
           src/dbus.c \
+          src/udev.c \
           $(PROTO_DIR)/virtual-keyboard-unstable-v1-protocol.c \
           $(PROTO_DIR)/wlr-virtual-pointer-unstable-v1-protocol.c
 

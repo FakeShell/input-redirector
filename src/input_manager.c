@@ -4,6 +4,7 @@
  */
 
 #include "input_manager.h"
+#include "udev.h"
 #include "xdo_simulate.h"
 #include "wayland_vinput.h"
 
@@ -12,9 +13,10 @@
 #define MAX_DEVICES 16
 
 typedef struct {
-    pthread_t   thread;
-    gchar      *path;
-    int         fd;
+    pthread_t thread;
+    gchar *path;
+    int fd;
+    gboolean active;
 } DeviceEntry;
 
 typedef struct {
@@ -37,6 +39,9 @@ static volatile gboolean running = FALSE;
 static GMutex fds_mutex;
 static gboolean fds_mutex_initialized = FALSE;
 
+static gchar *configured_paths[MAX_DEVICES + 1];
+static int configured_path_count = 0;
+
 typedef enum {
     BACKEND_X11 = 0,
     BACKEND_WAYLAND = 1,
@@ -49,6 +54,16 @@ static gboolean g_wayland_enabled = TRUE;
 static gchar *g_wayland_display = NULL;
 static InputBackend current_backend = BACKEND_X11;
 static gboolean backend_initialized = FALSE;
+static gboolean udev_started = FALSE;
+
+static void
+fds_mutex_ensure_initialized(void)
+{
+    if (!fds_mutex_initialized) {
+        g_mutex_init(&fds_mutex);
+        fds_mutex_initialized = TRUE;
+    }
+}
 
 static void
 backend_mutex_ensure_initialized(void)
@@ -199,6 +214,51 @@ input_get_screen_size(unsigned int *w, unsigned int *h)
         xdo_get_screen_size(w, h);
 }
 
+static gboolean
+path_is_configured(const gchar *path)
+{
+    int i;
+
+    if (path == NULL)
+        return FALSE;
+
+    for (i = 0; i < configured_path_count; i++) {
+        if (g_strcmp0(configured_paths[i], path) == 0)
+            return TRUE;
+    }
+
+    return FALSE;
+}
+
+static int
+find_device_index_by_path(const gchar *path)
+{
+    int i;
+
+    if (path == NULL)
+        return -1;
+
+    for (i = 0; i < MAX_DEVICES; i++) {
+        if (devices[i].path != NULL && g_strcmp0(devices[i].path, path) == 0)
+            return i;
+    }
+
+    return -1;
+}
+
+static int
+find_free_device_slot(void)
+{
+    int i;
+
+    for (i = 0; i < MAX_DEVICES; i++) {
+        if (devices[i].path == NULL)
+            return i;
+    }
+
+    return -1;
+}
+
 static int
 grab_device(const gchar *dev_path)
 {
@@ -212,15 +272,6 @@ grab_device(const gchar *dev_path)
         close(fd);
         return -1;
     }
-
-    g_mutex_lock(&fds_mutex);
-    for (int i = 0; i < MAX_DEVICES; i++) {
-        if (devices[i].fd < 0) {
-            devices[i].fd = fd;
-            break;
-        }
-    }
-    g_mutex_unlock(&fds_mutex);
 
     g_debug("grab_device: grabbed %s (fd=%d)", dev_path, fd);
     return fd;
@@ -241,7 +292,14 @@ static void
 cleanup_handler(void *arg)
 {
     DeviceEntry *entry = arg;
+
+    fds_mutex_ensure_initialized();
+
     ungrab_device(entry);
+
+    g_mutex_lock(&fds_mutex);
+    entry->active = FALSE;
+    g_mutex_unlock(&fds_mutex);
 }
 
 static void
@@ -366,9 +424,11 @@ device_ev_syn(DeviceEntry *entry, DeviceThreadState *st)
 
     if (st->has_abs && st->max_x > 0 && st->max_y > 0 && st->touch_active) {
         unsigned int w = 0, h = 0;
+        int sx, sy;
+
         input_get_screen_size(&w, &h);
-        int sx = (w > 0) ? (st->abs_x * (int) w) / st->max_x : 0;
-        int sy = (h > 0) ? (st->abs_y * (int) h) / st->max_y : 0;
+        sx = (w > 0) ? (st->abs_x * (int) w) / st->max_x : 0;
+        sy = (h > 0) ? (st->abs_y * (int) h) / st->max_y : 0;
 
         /* first ABS after touch down: send down at the right pos */
         if (st->first) {
@@ -392,8 +452,12 @@ device_thread(void *data)
     device_state_init(&st);
 
     entry->fd = grab_device(entry->path);
-    if (entry->fd < 0)
+    if (entry->fd < 0) {
+        g_mutex_lock(&fds_mutex);
+        entry->active = FALSE;
+        g_mutex_unlock(&fds_mutex);
         return NULL;
+    }
 
     /* allow read() to be a cancellation point */
     pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
@@ -406,31 +470,187 @@ device_thread(void *data)
     device_read_abs_ranges(entry, &st);
 
     while (running) {
-        /* block here until event or pthread_cancel() */
-        if (read(entry->fd, &ev, sizeof(ev)) != sizeof(ev))
-            continue;
+        ssize_t n;
 
-        switch (ev.type) {
-        case EV_KEY:
-            device_ev_key(entry, &st, &ev);
+        /* block here until event or pthread_cancel() */
+        n = read(entry->fd, &ev, sizeof(ev));
+        if (n == (ssize_t) sizeof(ev)) {
+            switch (ev.type) {
+            case EV_KEY:
+                device_ev_key(entry, &st, &ev);
+                break;
+            case EV_REL:
+                device_ev_rel(entry, &st, &ev);
+                break;
+            case EV_ABS:
+                device_ev_abs(entry, &st, &ev);
+                break;
+            case EV_SYN:
+                device_ev_syn(entry, &st);
+                break;
+            default:
+                break;
+            }
+            continue;
+        }
+
+        if (!running)
             break;
-        case EV_REL:
-            device_ev_rel(entry, &st, &ev);
-            break;
-        case EV_ABS:
-            device_ev_abs(entry, &st, &ev);
-            break;
-        case EV_SYN:
-            device_ev_syn(entry, &st);
-            break;
-        default:
+
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+
+            g_debug("device_thread: read(%s) failed: %s",
+                    entry->path, g_strerror(errno));
             break;
         }
+
+        if (n == 0) {
+            g_debug("device_thread: read(%s) returned EOF", entry->path);
+            break;
+        }
+
+        g_debug("device_thread: short read on %s: %zd bytes", entry->path, n);
+        break;
     }
 
     /* invoke cleanup handler */
     pthread_cleanup_pop(1);
     return NULL;
+}
+
+static gboolean
+start_device_thread_for_path(const gchar *path)
+{
+    int idx;
+
+    fds_mutex_ensure_initialized();
+
+    if (path == NULL || *path == '\0')
+        return FALSE;
+
+    g_mutex_lock(&fds_mutex);
+
+    idx = find_device_index_by_path(path);
+    if (idx >= 0) {
+        if (devices[idx].active) {
+            g_mutex_unlock(&fds_mutex);
+            return TRUE;
+        }
+
+        g_free(devices[idx].path);
+        devices[idx].path = g_strdup(path);
+        devices[idx].fd = -1;
+        devices[idx].active = TRUE;
+
+        if (pthread_create(&devices[idx].thread, NULL, device_thread, &devices[idx]) != 0) {
+            g_debug("input_manager: failed to create thread for %s: %s",
+                    path, g_strerror(errno));
+            devices[idx].active = FALSE;
+            g_mutex_unlock(&fds_mutex);
+            return FALSE;
+        }
+
+        g_mutex_unlock(&fds_mutex);
+        return TRUE;
+    }
+
+    idx = find_free_device_slot();
+    if (idx < 0) {
+        g_debug("input_manager: no free device slot for %s", path);
+        g_mutex_unlock(&fds_mutex);
+        return FALSE;
+    }
+
+    devices[idx].path = g_strdup(path);
+    devices[idx].fd = -1;
+    devices[idx].active = TRUE;
+
+    if (pthread_create(&devices[idx].thread, NULL, device_thread, &devices[idx]) != 0) {
+        g_debug("input_manager: failed to create thread for %s: %s",
+                path, g_strerror(errno));
+        g_free(devices[idx].path);
+        devices[idx].path = NULL;
+        devices[idx].fd = -1;
+        devices[idx].active = FALSE;
+        g_mutex_unlock(&fds_mutex);
+        return FALSE;
+    }
+
+    device_count++;
+    g_mutex_unlock(&fds_mutex);
+    return TRUE;
+}
+
+static void
+clear_configured_paths(void)
+{
+    int i;
+
+    for (i = 0; i < MAX_DEVICES; i++) {
+        g_free(configured_paths[i]);
+        configured_paths[i] = NULL;
+    }
+
+    configured_path_count = 0;
+}
+
+static void
+store_configured_paths(const gchar *paths)
+{
+    gchar **list;
+    int i;
+
+    clear_configured_paths();
+
+    if (paths == NULL || *paths == '\0')
+        return;
+
+    list = g_strsplit(paths, ",", -1);
+    for (i = 0; list[i] != NULL && configured_path_count < MAX_DEVICES; i++) {
+        gchar *p = g_strstrip(list[i]);
+
+        if (*p == '\0')
+            continue;
+
+        configured_paths[configured_path_count++] = g_strdup(p);
+    }
+    g_strfreev(list);
+}
+
+static void
+on_udev_device_event(const gchar *action,
+                     const gchar *devnode,
+                     const gchar *subsystem,
+                     gpointer     user_data)
+{
+    (void) user_data;
+
+    if (subsystem == NULL || g_strcmp0(subsystem, "input") != 0)
+        return;
+
+    if (action == NULL || g_strcmp0(action, "add") != 0)
+        return;
+
+    fds_mutex_ensure_initialized();
+
+    g_mutex_lock(&fds_mutex);
+
+    if (!running) {
+        g_mutex_unlock(&fds_mutex);
+        return;
+    }
+
+    if (!path_is_configured(devnode)) {
+        g_mutex_unlock(&fds_mutex);
+        return;
+    }
+
+    g_mutex_unlock(&fds_mutex);
+
+    g_debug("input_manager: udev add for configured device %s", devnode);
+    start_device_thread_for_path(devnode);
 }
 
 void
@@ -462,45 +682,62 @@ input_manager_set_wayland_display(const gchar *wayland_display)
 void
 input_manager_update(const gchar *paths)
 {
-    if (!fds_mutex_initialized) {
-        g_mutex_init(&fds_mutex);
-        fds_mutex_initialized = TRUE;
-    }
+    int i;
+
+    fds_mutex_ensure_initialized();
 
     input_manager_stop();
     backend_ensure_ready();
 
+    if (!udev_started) {
+        if (udev_start(on_udev_device_event, NULL))
+            udev_started = TRUE;
+        else
+            g_debug("input_manager: failed to start udev monitor");
+    }
+
+    g_mutex_lock(&fds_mutex);
+
     /* reset state */
-    for (int i = 0; i < MAX_DEVICES; i++) {
+    for (i = 0; i < MAX_DEVICES; i++) {
+        g_free(devices[i].path);
         devices[i].path = NULL;
         devices[i].fd   = -1;
+        devices[i].active = FALSE;
     }
     device_count = 0;
+
+    store_configured_paths(paths);
+
     running = TRUE;
 
-    gchar **list = g_strsplit(paths, ",", -1);
-    for (int i = 0; list[i] && i < MAX_DEVICES; i++) {
-        gchar *p = g_strstrip(list[i]);
-        devices[i].path = g_strdup(p);
-        pthread_create(&devices[i].thread, NULL, device_thread, &devices[i]);
-        device_count++;
-    }
-    g_strfreev(list);
+    g_mutex_unlock(&fds_mutex);
+
+    for (i = 0; i < configured_path_count; i++)
+        start_device_thread_for_path(configured_paths[i]);
 }
 
 void
 input_manager_stop(void)
 {
+    int i;
+
     if (!running)
         return;
 
     g_debug("Stopping all threads");
     running = FALSE;
 
-    for (int i = 0; i < device_count; i++) {
-        pthread_cancel(devices[i].thread);
-        pthread_join(devices[i].thread, NULL);
+    for (i = 0; i < MAX_DEVICES; i++) {
+        if (devices[i].active) {
+            pthread_cancel(devices[i].thread);
+            pthread_join(devices[i].thread, NULL);
+        }
+
         g_free(devices[i].path);
+        devices[i].path = NULL;
+        devices[i].fd = -1;
+        devices[i].active = FALSE;
     }
 
     device_count = 0;
