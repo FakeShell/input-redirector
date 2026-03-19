@@ -537,6 +537,18 @@ ensure_initialized(void)
             g_wl.out_width, g_wl.out_height, g_wl.out_transform);
 }
 
+static enum wl_pointer_axis_source
+scroll_source_for_code(int code)
+{
+    switch (code) {
+    case REL_WHEEL:
+    case REL_HWHEEL:
+        return WL_POINTER_AXIS_SOURCE_FINGER;
+    default:
+        return WL_POINTER_AXIS_SOURCE_FINGER;
+    }
+}
+
 void
 wayland_vinput_init(const gchar *wayland_display)
 {
@@ -693,6 +705,8 @@ wayland_vinput_scroll(int code,
     }
 
     enum wl_pointer_axis axis;
+    enum wl_pointer_axis_source source;
+    uint32_t t;
 
     if (code == REL_WHEEL) {
         axis = WL_POINTER_AXIS_VERTICAL_SCROLL;
@@ -703,11 +717,27 @@ wayland_vinput_scroll(int code,
         return;
     }
 
+    source = scroll_source_for_code(code);
+    t = now_ms();
+
+    zwlr_virtual_pointer_v1_axis_source(
+        g_wl.vptr,
+        source
+    );
+
     zwlr_virtual_pointer_v1_axis(
         g_wl.vptr,
-        now_ms(),
+        t,
         axis,
-        wl_fixed_from_double((double) - value * 10.0)
+        wl_fixed_from_double((double) -value * 10.0)
+    );
+
+    zwlr_virtual_pointer_v1_frame(g_wl.vptr);
+
+    zwlr_virtual_pointer_v1_axis_stop(
+        g_wl.vptr,
+        t,
+        axis
     );
 
     zwlr_virtual_pointer_v1_frame(g_wl.vptr);
