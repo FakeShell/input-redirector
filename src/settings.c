@@ -7,6 +7,110 @@
 #include "input_manager.h"
 
 static GSettings *settings = NULL;
+static GSettings *mouse_settings = NULL;
+
+static gboolean mouse_has_speed = FALSE;
+static gboolean mouse_has_natural_scroll = FALSE;
+
+static GSettingsSchema *
+lookup_schema(const gchar *schema_id)
+{
+    GSettingsSchemaSource *source;
+
+    source = g_settings_schema_source_get_default();
+    if (!source)
+        return NULL;
+
+    return g_settings_schema_source_lookup(source, schema_id, TRUE);
+}
+
+static void
+apply_mouse_speed_setting(void)
+{
+    gdouble speed;
+
+    if (!mouse_settings || !mouse_has_speed)
+        return;
+
+    speed = g_settings_get_double(mouse_settings, "speed");
+    g_debug("GNOME mouse speed: %.3f", speed);
+    input_manager_set_mouse_speed(speed);
+}
+
+static void
+apply_mouse_natural_scroll_setting(void)
+{
+    gboolean natural_scroll;
+
+    if (!mouse_settings || !mouse_has_natural_scroll)
+        return;
+
+    natural_scroll = g_settings_get_boolean(mouse_settings, "natural-scroll");
+    g_debug("GNOME mouse natural-scroll: %s", natural_scroll ? "true" : "false");
+    input_manager_set_mouse_natural_scroll(natural_scroll);
+}
+
+static void
+on_mouse_settings_changed(GSettings *settings,
+                          gchar     *key,
+                          gpointer   user_data)
+{
+    if (g_strcmp0(key, "speed") == 0)
+        apply_mouse_speed_setting();
+    else if (g_strcmp0(key, "natural-scroll") == 0)
+        apply_mouse_natural_scroll_setting();
+}
+
+static void
+setup_gnome_mouse_settings(void)
+{
+    GSettingsSchema *schema;
+
+    schema = lookup_schema("org.gnome.desktop.peripherals.mouse");
+    if (!schema) {
+        g_debug("GNOME mouse settings schema not found. using builtin defaults");
+        input_manager_set_mouse_speed(0.0);
+        input_manager_set_mouse_natural_scroll(FALSE);
+        return;
+    }
+
+    mouse_has_speed = g_settings_schema_has_key(schema, "speed");
+    mouse_has_natural_scroll = g_settings_schema_has_key(schema, "natural-scroll");
+
+    if (!mouse_has_speed && !mouse_has_natural_scroll) {
+        g_debug("GNOME mouse schema exists, but wanted keys do not. using builtin defaults");
+        input_manager_set_mouse_speed(0.0);
+        input_manager_set_mouse_natural_scroll(FALSE);
+        g_settings_schema_unref(schema);
+        return;
+    }
+
+    mouse_settings = g_settings_new("org.gnome.desktop.peripherals.mouse");
+
+    if (mouse_has_speed) {
+        apply_mouse_speed_setting();
+
+        g_signal_connect(mouse_settings,
+                         "changed::speed",
+                         G_CALLBACK(on_mouse_settings_changed),
+                         NULL);
+    } else {
+        input_manager_set_mouse_speed(0.0);
+    }
+
+    if (mouse_has_natural_scroll) {
+        apply_mouse_natural_scroll_setting();
+
+        g_signal_connect(mouse_settings,
+                         "changed::natural-scroll",
+                         G_CALLBACK(on_mouse_settings_changed),
+                         NULL);
+    } else {
+        input_manager_set_mouse_natural_scroll(FALSE);
+    }
+
+    g_settings_schema_unref(schema);
+}
 
 static void
 apply_display_setting(const gchar *display_value)
@@ -64,24 +168,31 @@ on_settings_changed(GSettings *settings,
 void
 settings_init(void)
 {
+    gchar *disp;
+    gchar *wdisp;
+    gchar *paths;
+    gboolean enable_wayland;
+
     g_debug("Initializing GSettings for io.furios.input-redirector");
     settings = g_settings_new("io.furios.input-redirector");
 
+    setup_gnome_mouse_settings();
+
     /* apply DISPLAY / WAYLAND_DISPLAY */
-    gchar *disp = g_settings_get_string(settings, "display");
+    disp = g_settings_get_string(settings, "display");
     apply_display_setting(disp);
     g_free(disp);
 
-    gchar *wdisp = g_settings_get_string(settings, "wayland-display");
+    wdisp = g_settings_get_string(settings, "wayland-display");
     apply_wayland_display_setting(wdisp);
     input_manager_set_wayland_display(wdisp);
     g_free(wdisp);
 
-    gboolean enable_wayland = g_settings_get_boolean(settings, "enable-wayland");
+    enable_wayland = g_settings_get_boolean(settings, "enable-wayland");
     input_manager_set_wayland_enabled(enable_wayland);
 
     /* spawn input threads */
-    gchar *paths = g_settings_get_string(settings, "input-paths");
+    paths = g_settings_get_string(settings, "input-paths");
     input_manager_update(paths);
     g_free(paths);
 
@@ -89,14 +200,17 @@ settings_init(void)
                      "changed::input-paths",
                      G_CALLBACK(on_settings_changed),
                      NULL);
+
     g_signal_connect(settings,
                      "changed::display",
                      G_CALLBACK(on_settings_changed),
                      NULL);
+
     g_signal_connect(settings,
                      "changed::enable-wayland",
                      G_CALLBACK(on_settings_changed),
                      NULL);
+
     g_signal_connect(settings,
                      "changed::wayland-display",
                      G_CALLBACK(on_settings_changed),
@@ -106,6 +220,13 @@ settings_init(void)
 void
 settings_cleanup(void)
 {
-    if (settings)
+    if (mouse_settings) {
+        g_object_unref(mouse_settings);
+        mouse_settings = NULL;
+    }
+
+    if (settings) {
         g_object_unref(settings);
+        settings = NULL;
+    }
 }

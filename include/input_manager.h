@@ -23,21 +23,37 @@ void
 input_manager_stop(void);
 
 /**
- * Enable/disable Wayland backend selection.
+ * Enable or disable Wayland backend selection.
  *
- * When enabled, input_manager will route input simulation calls to wayland_vinput.
- * When disabled, it will use the X11 backend (libxdo).
+ * @param enabled TRUE to use the Wayland backend, FALSE to use the X11 backend.
  */
 void
 input_manager_set_wayland_enabled(gboolean enabled);
 
 /**
- * Set Wayland display name (WAYLAND_DISPLAY).
+ * Set the Wayland display name used by the Wayland backend.
  *
- * Example: "wayland-0", "wayland-1".
+ * @param wayland_display WAYLAND_DISPLAY value, for example "wayland-0".
  */
 void
 input_manager_set_wayland_display(const gchar *wayland_display);
+
+/**
+ * Set mouse speed scaling from GNOME mouse settings.
+ *
+ * @param speed Mouse speed in the GNOME range -1.0 to 1.0. A value of 0.0
+ *              preserves the current behavior with no scaling.
+ */
+void
+input_manager_set_mouse_speed(gdouble speed);
+
+/**
+ * Enable or disable natural scrolling for relative wheel events.
+ *
+ * @param enabled TRUE to invert wheel scrolling, FALSE to keep kernel scroll direction.
+ */
+void
+input_manager_set_mouse_natural_scroll(gboolean enabled);
 
 /**
  * Inject a key event into the current backend.
@@ -122,8 +138,8 @@ input_manager_inject_touch_up(const gchar *source);
 /**
  * Query the target screen size from the current backend.
  *
- * @param width   Returned width (pixels). If unknown, 0.
- * @param height  Returned height (pixels). If unknown, 0.
+ * @param width   Returned width in pixels. If unknown, 0.
+ * @param height  Returned height in pixels. If unknown, 0.
  */
 void
 input_manager_get_screen_size(guint *width,

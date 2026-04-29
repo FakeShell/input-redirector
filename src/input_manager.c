@@ -56,6 +56,11 @@ static InputBackend current_backend = BACKEND_X11;
 static gboolean backend_initialized = FALSE;
 static gboolean udev_started = FALSE;
 
+static GMutex mouse_settings_mutex;
+static gboolean mouse_settings_mutex_initialized = FALSE;
+static gdouble g_mouse_speed = 0.0;
+static gboolean g_mouse_natural_scroll = FALSE;
+
 static void
 fds_mutex_ensure_initialized(void)
 {
@@ -72,6 +77,74 @@ backend_mutex_ensure_initialized(void)
         g_mutex_init(&backend_mutex);
         backend_mutex_initialized = TRUE;
     }
+}
+
+static void
+mouse_settings_mutex_ensure_initialized(void)
+{
+    if (!mouse_settings_mutex_initialized) {
+        g_mutex_init(&mouse_settings_mutex);
+        mouse_settings_mutex_initialized = TRUE;
+    }
+}
+
+void
+input_manager_set_mouse_speed(gdouble speed)
+{
+    mouse_settings_mutex_ensure_initialized();
+
+    if (speed < -1.0)
+        speed = -1.0;
+    else if (speed > 1.0)
+        speed = 1.0;
+
+    g_mutex_lock(&mouse_settings_mutex);
+    g_mouse_speed = speed;
+    g_mutex_unlock(&mouse_settings_mutex);
+}
+
+void
+input_manager_set_mouse_natural_scroll(gboolean enabled)
+{
+    mouse_settings_mutex_ensure_initialized();
+
+    g_mutex_lock(&mouse_settings_mutex);
+    g_mouse_natural_scroll = enabled ? TRUE : FALSE;
+    g_mutex_unlock(&mouse_settings_mutex);
+}
+
+static gdouble
+get_mouse_speed_multiplier(void)
+{
+    gdouble speed;
+
+    mouse_settings_mutex_ensure_initialized();
+
+    g_mutex_lock(&mouse_settings_mutex);
+    speed = g_mouse_speed;
+    g_mutex_unlock(&mouse_settings_mutex);
+
+    if (speed == 0.0)
+        return 1.0;
+
+    if (speed > 0.0)
+        return 1.0 + speed * 2.0;
+
+    return 1.0 + speed * 0.75;
+}
+
+static gboolean
+get_mouse_natural_scroll(void)
+{
+    gboolean enabled;
+
+    mouse_settings_mutex_ensure_initialized();
+
+    g_mutex_lock(&mouse_settings_mutex);
+    enabled = g_mouse_natural_scroll;
+    g_mutex_unlock(&mouse_settings_mutex);
+
+    return enabled;
 }
 
 static InputBackend
@@ -387,6 +460,16 @@ device_ev_rel(DeviceEntry *entry, DeviceThreadState *st, const struct input_even
         return;
     }
 
+    if (ev->code == REL_WHEEL || ev->code == REL_HWHEEL) {
+        int value = ev->value;
+
+        if (get_mouse_natural_scroll())
+            value = -value;
+
+        input_simulate_scroll(ev->code, value, entry->path);
+        return;
+    }
+
     input_simulate_scroll(ev->code, ev->value, entry->path);
 }
 
@@ -416,7 +499,17 @@ static void
 device_ev_syn(DeviceEntry *entry, DeviceThreadState *st)
 {
     if (st->has_motion) {
-        input_simulate_mouse_motion(st->rel_x, st->rel_y, entry->path);
+        gdouble multiplier;
+        int dx;
+        int dy;
+
+        multiplier = get_mouse_speed_multiplier();
+
+        dx = (int) ((gdouble) st->rel_x * multiplier);
+        dy = (int) ((gdouble) st->rel_y * multiplier);
+
+        input_simulate_mouse_motion(dx, dy, entry->path);
+
         st->rel_x = 0;
         st->rel_y = 0;
         st->has_motion = FALSE;
@@ -765,7 +858,16 @@ input_manager_inject_mouse_motion(gint32       dx,
                                   gint32       dy,
                                   const gchar *source)
 {
-    input_simulate_mouse_motion((int) dx, (int) dy, source ? source : "dbus");
+    gdouble multiplier;
+    int scaled_dx;
+    int scaled_dy;
+
+    multiplier = get_mouse_speed_multiplier();
+
+    scaled_dx = (int) ((gdouble) dx * multiplier);
+    scaled_dy = (int) ((gdouble) dy * multiplier);
+
+    input_simulate_mouse_motion(scaled_dx, scaled_dy, source ? source : "dbus");
 }
 
 void
@@ -773,7 +875,12 @@ input_manager_inject_scroll(guint32      code,
                             gint32       value,
                             const gchar *source)
 {
-    input_simulate_scroll((int) code, (int) value, source ? source : "dbus");
+    gint32 adjusted_value = value;
+
+    if ((code == REL_WHEEL || code == REL_HWHEEL) && get_mouse_natural_scroll())
+        adjusted_value = -adjusted_value;
+
+    input_simulate_scroll((int) code, (int) adjusted_value, source ? source : "dbus");
 }
 
 void
