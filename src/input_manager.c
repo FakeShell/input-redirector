@@ -19,6 +19,12 @@ typedef struct {
     gboolean active;
 } DeviceEntry;
 
+typedef enum {
+    DEVICE_TYPE_UNKNOWN = 0,
+    DEVICE_TYPE_TOUCHPAD,
+    DEVICE_TYPE_TOUCHSCREEN,
+} DeviceType;
+
 typedef struct {
     int max_x, max_y;
 
@@ -28,9 +34,14 @@ typedef struct {
     int abs_x, abs_y;
     gboolean has_abs;
 
+    int last_abs_x, last_abs_y;
+    gboolean have_last_abs;
+
     gboolean touch_active;
     gboolean moved_during_touch;
     gboolean first;
+
+    DeviceType device_type;
 } DeviceThreadState;
 
 static DeviceEntry devices[MAX_DEVICES];
@@ -60,6 +71,30 @@ static GMutex mouse_settings_mutex;
 static gboolean mouse_settings_mutex_initialized = FALSE;
 static gdouble g_mouse_speed = 0.0;
 static gboolean g_mouse_natural_scroll = FALSE;
+
+static gboolean
+test_bit(const unsigned long *bits, int bit)
+{
+    return !!(bits[bit / (8 * sizeof(unsigned long))] &
+              (1UL << (bit % (8 * sizeof(unsigned long)))));
+}
+
+static DeviceType
+detect_device_type(int fd)
+{
+    unsigned long props[(INPUT_PROP_MAX / (8 * sizeof(unsigned long))) + 1] = {0};
+
+    if (ioctl(fd, EVIOCGPROP(sizeof(props)), props) < 0)
+        return DEVICE_TYPE_UNKNOWN;
+
+    if (test_bit(props, INPUT_PROP_DIRECT))
+        return DEVICE_TYPE_TOUCHSCREEN;
+
+    if (test_bit(props, INPUT_PROP_POINTER) || test_bit(props, INPUT_PROP_BUTTONPAD))
+        return DEVICE_TYPE_TOUCHPAD;
+
+    return DEVICE_TYPE_UNKNOWN;
+}
 
 static void
 fds_mutex_ensure_initialized(void)
@@ -389,9 +424,15 @@ device_state_init(DeviceThreadState *st)
     st->abs_y = 0;
     st->has_abs = FALSE;
 
+    st->last_abs_x = 0;
+    st->last_abs_y = 0;
+    st->have_last_abs = FALSE;
+
     st->touch_active = FALSE;
     st->moved_during_touch = FALSE;
     st->first = TRUE;
+
+    st->device_type = DEVICE_TYPE_UNKNOWN;
 }
 
 static void
@@ -414,14 +455,16 @@ device_ev_key(DeviceEntry *entry, DeviceThreadState *st, const struct input_even
             st->touch_active = TRUE;
             st->moved_during_touch = FALSE;
             st->first = TRUE;
+            st->have_last_abs = FALSE;
         } else { /* Touch up */
             st->touch_active = FALSE;
+            st->have_last_abs = FALSE;
             /* no movement: treat as click */
             if (!st->moved_during_touch) {
                 /* inject a left-button click */
                 input_simulate_mouse_button(BTN_LEFT, 1, entry->path);
                 input_simulate_mouse_button(BTN_LEFT, 0, entry->path);
-            } else {
+            } else if (st->device_type != DEVICE_TYPE_TOUCHPAD) {
                 /* end of drag: lift */
                 input_simulate_touch_up(entry->path);
             }
@@ -481,7 +524,7 @@ device_ev_abs(DeviceEntry *entry, DeviceThreadState *st, const struct input_even
     if (ev->code == ABS_X) {
         st->abs_x = ev->value;
         st->has_abs = TRUE;
-        if (st->touch_active)
+        if (st->touch_active && st->device_type != DEVICE_TYPE_TOUCHPAD)
             st->moved_during_touch = TRUE;
         return;
     }
@@ -489,7 +532,7 @@ device_ev_abs(DeviceEntry *entry, DeviceThreadState *st, const struct input_even
     if (ev->code == ABS_Y) {
         st->abs_y = ev->value;
         st->has_abs = TRUE;
-        if (st->touch_active)
+        if (st->touch_active && st->device_type != DEVICE_TYPE_TOUCHPAD)
             st->moved_during_touch = TRUE;
         return;
     }
@@ -513,6 +556,33 @@ device_ev_syn(DeviceEntry *entry, DeviceThreadState *st)
         st->rel_x = 0;
         st->rel_y = 0;
         st->has_motion = FALSE;
+    }
+
+    if (st->has_abs && st->touch_active && st->device_type == DEVICE_TYPE_TOUCHPAD) {
+        if (st->have_last_abs) {
+            gdouble multiplier;
+            int dx;
+            int dy;
+
+            multiplier = get_mouse_speed_multiplier();
+
+            dx = st->abs_x - st->last_abs_x;
+            dy = st->abs_y - st->last_abs_y;
+
+            if (dx != 0 || dy != 0)
+                st->moved_during_touch = TRUE;
+
+            dx = (int) ((gdouble) dx * multiplier);
+            dy = (int) ((gdouble) dy * multiplier);
+
+            input_simulate_mouse_motion(dx, dy, entry->path);
+        }
+
+        st->last_abs_x = st->abs_x;
+        st->last_abs_y = st->abs_y;
+        st->have_last_abs = TRUE;
+        st->has_abs = FALSE;
+        return;
     }
 
     if (st->has_abs && st->max_x > 0 && st->max_y > 0 && st->touch_active) {
@@ -551,6 +621,8 @@ device_thread(void *data)
         g_mutex_unlock(&fds_mutex);
         return NULL;
     }
+
+    st.device_type = detect_device_type(entry->fd);
 
     /* allow read() to be a cancellation point */
     pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
