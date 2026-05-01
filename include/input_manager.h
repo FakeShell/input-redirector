@@ -48,6 +48,15 @@ void
 input_manager_set_mouse_speed(gdouble speed);
 
 /**
+ * Set touchpad speed scaling from GNOME touchpad settings.
+ *
+ * @param speed Touchpad speed in the GNOME range -1.0 to 1.0. A value of 0.0
+ *              preserves the current behavior with no scaling.
+ */
+void
+input_manager_set_touchpad_speed(gdouble speed);
+
+/**
  * Enable or disable natural scrolling for relative wheel events.
  *
  * @param enabled TRUE to invert wheel scrolling, FALSE to keep kernel scroll direction.

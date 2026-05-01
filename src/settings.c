@@ -8,9 +8,11 @@
 
 static GSettings *settings = NULL;
 static GSettings *mouse_settings = NULL;
+static GSettings *touchpad_settings = NULL;
 
 static gboolean mouse_has_speed = FALSE;
 static gboolean mouse_has_natural_scroll = FALSE;
+static gboolean touchpad_has_speed = FALSE;
 
 static GSettingsSchema *
 lookup_schema(const gchar *schema_id)
@@ -51,6 +53,19 @@ apply_mouse_natural_scroll_setting(void)
 }
 
 static void
+apply_touchpad_speed_setting(void)
+{
+    gdouble speed;
+
+    if (!touchpad_settings || !touchpad_has_speed)
+        return;
+
+    speed = g_settings_get_double(touchpad_settings, "speed");
+    g_debug("GNOME touchpad speed: %.3f", speed);
+    input_manager_set_touchpad_speed(speed);
+}
+
+static void
 on_mouse_settings_changed(GSettings *settings,
                           gchar     *key,
                           gpointer   user_data)
@@ -59,6 +74,15 @@ on_mouse_settings_changed(GSettings *settings,
         apply_mouse_speed_setting();
     else if (g_strcmp0(key, "natural-scroll") == 0)
         apply_mouse_natural_scroll_setting();
+}
+
+static void
+on_touchpad_settings_changed(GSettings *settings,
+                             gchar     *key,
+                             gpointer   user_data)
+{
+    if (g_strcmp0(key, "speed") == 0)
+        apply_touchpad_speed_setting();
 }
 
 static void
@@ -108,6 +132,39 @@ setup_gnome_mouse_settings(void)
     } else {
         input_manager_set_mouse_natural_scroll(FALSE);
     }
+
+    g_settings_schema_unref(schema);
+}
+
+static void
+setup_gnome_touchpad_settings(void)
+{
+    GSettingsSchema *schema;
+
+    schema = lookup_schema("org.gnome.desktop.peripherals.touchpad");
+    if (!schema) {
+        g_debug("GNOME touchpad settings schema not found. using builtin defaults");
+        input_manager_set_touchpad_speed(0.0);
+        return;
+    }
+
+    touchpad_has_speed = g_settings_schema_has_key(schema, "speed");
+
+    if (!touchpad_has_speed) {
+        g_debug("GNOME touchpad schema exists, but speed key does not. using builtin default");
+        input_manager_set_touchpad_speed(0.0);
+        g_settings_schema_unref(schema);
+        return;
+    }
+
+    touchpad_settings = g_settings_new("org.gnome.desktop.peripherals.touchpad");
+
+    apply_touchpad_speed_setting();
+
+    g_signal_connect(touchpad_settings,
+                     "changed::speed",
+                     G_CALLBACK(on_touchpad_settings_changed),
+                     NULL);
 
     g_settings_schema_unref(schema);
 }
@@ -177,6 +234,7 @@ settings_init(void)
     settings = g_settings_new("io.furios.input-redirector");
 
     setup_gnome_mouse_settings();
+    setup_gnome_touchpad_settings();
 
     /* apply DISPLAY / WAYLAND_DISPLAY */
     disp = g_settings_get_string(settings, "display");
@@ -220,6 +278,11 @@ settings_init(void)
 void
 settings_cleanup(void)
 {
+    if (touchpad_settings) {
+        g_object_unref(touchpad_settings);
+        touchpad_settings = NULL;
+    }
+
     if (mouse_settings) {
         g_object_unref(mouse_settings);
         mouse_settings = NULL;

@@ -70,6 +70,7 @@ static gboolean udev_started = FALSE;
 static GMutex mouse_settings_mutex;
 static gboolean mouse_settings_mutex_initialized = FALSE;
 static gdouble g_mouse_speed = 0.0;
+static gdouble g_touchpad_speed = 0.0;
 static gboolean g_mouse_natural_scroll = FALSE;
 
 static gboolean
@@ -139,6 +140,21 @@ input_manager_set_mouse_speed(gdouble speed)
 }
 
 void
+input_manager_set_touchpad_speed(gdouble speed)
+{
+    mouse_settings_mutex_ensure_initialized();
+
+    if (speed < -1.0)
+        speed = -1.0;
+    else if (speed > 1.0)
+        speed = 1.0;
+
+    g_mutex_lock(&mouse_settings_mutex);
+    g_touchpad_speed = speed;
+    g_mutex_unlock(&mouse_settings_mutex);
+}
+
+void
 input_manager_set_mouse_natural_scroll(gboolean enabled)
 {
     mouse_settings_mutex_ensure_initialized();
@@ -146,6 +162,18 @@ input_manager_set_mouse_natural_scroll(gboolean enabled)
     g_mutex_lock(&mouse_settings_mutex);
     g_mouse_natural_scroll = enabled ? TRUE : FALSE;
     g_mutex_unlock(&mouse_settings_mutex);
+}
+
+static gdouble
+speed_to_multiplier(gdouble speed)
+{
+    if (speed == 0.0)
+        return 1.0;
+
+    if (speed > 0.0)
+        return 1.0 + speed * 2.0;
+
+    return 1.0 + speed * 0.75;
 }
 
 static gdouble
@@ -159,13 +187,21 @@ get_mouse_speed_multiplier(void)
     speed = g_mouse_speed;
     g_mutex_unlock(&mouse_settings_mutex);
 
-    if (speed == 0.0)
-        return 1.0;
+    return speed_to_multiplier(speed);
+}
 
-    if (speed > 0.0)
-        return 1.0 + speed * 2.0;
+static gdouble
+get_touchpad_speed_multiplier(void)
+{
+    gdouble speed;
 
-    return 1.0 + speed * 0.75;
+    mouse_settings_mutex_ensure_initialized();
+
+    g_mutex_lock(&mouse_settings_mutex);
+    speed = g_touchpad_speed;
+    g_mutex_unlock(&mouse_settings_mutex);
+
+    return speed_to_multiplier(speed);
 }
 
 static gboolean
@@ -564,7 +600,7 @@ device_ev_syn(DeviceEntry *entry, DeviceThreadState *st)
             int dx;
             int dy;
 
-            multiplier = get_mouse_speed_multiplier();
+            multiplier = get_touchpad_speed_multiplier();
 
             dx = st->abs_x - st->last_abs_x;
             dy = st->abs_y - st->last_abs_y;
